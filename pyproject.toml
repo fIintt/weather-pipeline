@@ -1,0 +1,20 @@
+[project]
+name = "api-warehouse"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "flint", email = "kiddolol39@gmail.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "psycopg[binary]>=3.3.6",
+    "requests>=2.34.2",
+]
+
+[project.scripts]
+api-warehouse = "api_warehouse:main"
+
+[build-system]
+requires = ["uv_build>=0.12.3,<0.13.0"]
+build-backend = "uv_build"
