@@ -1,7 +1,9 @@
 import logging
+import os
 from typing import Any
 
 import time
+from dotenv import load_dotenv
 import psycopg
 import requests
 
@@ -14,15 +16,19 @@ params: dict[str, Any] = {
 }
 
 logging.basicConfig(
-    level=logging.INFO, # minimum level of severity (e.g. DEBUG (severity = 10) will not be displayed)
+    level=logging.INFO,  # minimum level of severity (e.g. DEBUG (severity = 10) will not be displayed)
     format="%(asctime)s | %(levelname)s | %(filename)s | %(message)s",
-    datefmt="%m/%d/%Y %I:%M %p", # MM/DD/YYYY HH:MM AM/PM (e.g., 10/14/2026 06:04 PM)
+    datefmt="%m/%d/%Y %I:%M %p",  # MM/DD/YYYY HH:MM AM/PM (e.g., 10/14/2026 06:04 PM)
 )
 
 logger = logging.getLogger(__name__)
 
+load_dotenv()
 
-def fetch_weather() -> dict[str, Any] | None:
+DATABASE_URL = os.environ["DATABASE_URL"]
+
+
+def fetch_weather() -> dict[str, Any]:
     max_attempts = 3
     retryable_status_codes = {
         408,
@@ -52,7 +58,9 @@ def fetch_weather() -> dict[str, Any] | None:
             if attempt == max_attempts:
                 raise
 
-            logger.warning(f"HTTP {status_code}. " f"Retrying after attempt {attempt}...")
+            logger.warning(
+                f"HTTP {status_code}. " f"Retrying after attempt {attempt}..."
+            )
 
         except (
             requests.exceptions.Timeout,
@@ -61,16 +69,18 @@ def fetch_weather() -> dict[str, Any] | None:
             if attempt == max_attempts:
                 raise
 
-            logger.warning(f"Network error: {err}. " f"Retrying after attempt {attempt}...")
+            logger.warning(
+                f"Network error: {err}. " f"Retrying after attempt {attempt}..."
+            )
 
         delay = 2 ** (attempt - 1)
         time.sleep(delay)
 
+    return {}
+
 
 def save_weather(record: dict[str, Any]) -> bool:
-    with psycopg.connect(
-        "dbname=weather_pipeline user=postgres password=3211 host=localhost"
-    ) as conn:
+    with psycopg.connect(DATABASE_URL) as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
@@ -114,43 +124,46 @@ def extract_weather(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def run_pipeline():
+    started_at = time.perf_counter()
+
     logger.info("Weather pipeline started.")
-    
+
     try:
         data = fetch_weather()
+        record = extract_weather(data)
+        inserted = save_weather(record)
 
-        if data is not None:
-            record = extract_weather(data)
-            inserted = save_weather(record)
-
-            if inserted:
-                logger.info("New weather observation inserted.")
-            else:
-                logger.info("Observation already exists. Skipped.")
+        if inserted:
+            logger.info("New weather observation inserted.")
         else:
-            logger.error("Data is invalid")
+            logger.info("Observation already exists. Skipped.")
 
-    except requests.exceptions.RequestException as err:
-        logger.exception(f"API request failed: {err}")
+    except requests.exceptions.RequestException:
+        logger.exception("API request failed")
         raise
 
-    except (KeyError, ValueError, TypeError) as err:
-        logger.exception(f"Weather data validation failed: {err}")
+    except KeyError, ValueError, TypeError:
+        logger.exception("Weather data validation failed")
         raise
 
-    except psycopg.OperationalError as err:
-        logger.exception(f"Database connection/operation failed: {err}")
+    except psycopg.OperationalError:
+        logger.exception("Database connection/operation failed")
         raise
 
-    except psycopg.DataError as err:
-        logger.exception(f"Database rejected the data: {err}")
+    except psycopg.DataError:
+        logger.exception("Database rejected the data")
         raise
 
-    except psycopg.Error as err:
-        logger.exception(f"Miscellaneous database error: {err}")
+    except psycopg.Error:
+        logger.exception("Miscellaneous database error")
         raise
-    
-    logger.info("Weather pipeline succeeded.")
+
+    else:
+        logger.info("Weather pipeline succeeded.")
+
+    finally:
+        elapsed = time.perf_counter() - started_at
+        logger.info(f"Pipeline execution took {elapsed:.2f} seconds")
 
 
 if __name__ == "__main__":
