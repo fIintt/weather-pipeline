@@ -1,3 +1,4 @@
+import logging
 from typing import Any
 
 import time
@@ -11,6 +12,14 @@ params: dict[str, Any] = {
     "longitude": 66,
     "current": "temperature_2m,relative_humidity_2m",
 }
+
+logging.basicConfig(
+    level=logging.INFO, # minimum level of severity (e.g. DEBUG (severity = 10) will not be displayed)
+    format="%(asctime)s | %(levelname)s | %(filename)s | %(message)s",
+    datefmt="%m/%d/%Y %I:%M %p", # MM/DD/YYYY HH:MM AM/PM (e.g., 10/14/2026 06:04 PM)
+)
+
+logger = logging.getLogger(__name__)
 
 
 def fetch_weather() -> dict[str, Any] | None:
@@ -43,7 +52,7 @@ def fetch_weather() -> dict[str, Any] | None:
             if attempt == max_attempts:
                 raise
 
-            print(f"HTTP {status_code}. " f"Retrying after attempt {attempt}...")
+            logger.warning(f"HTTP {status_code}. " f"Retrying after attempt {attempt}...")
 
         except (
             requests.exceptions.Timeout,
@@ -52,13 +61,13 @@ def fetch_weather() -> dict[str, Any] | None:
             if attempt == max_attempts:
                 raise
 
-            print(f"Network error: {err}. " f"Retrying after attempt {attempt}...")
+            logger.warning(f"Network error: {err}. " f"Retrying after attempt {attempt}...")
 
         delay = 2 ** (attempt - 1)
         time.sleep(delay)
 
 
-def save_weather(record: dict[str, Any]):
+def save_weather(record: dict[str, Any]) -> bool:
     with psycopg.connect(
         "dbname=weather_pipeline user=postgres password=3211 host=localhost"
     ) as conn:
@@ -74,6 +83,8 @@ def save_weather(record: dict[str, Any]):
                 (record["temperature"], record["humidity"], record["recorded_at"]),
             )
 
+            return cursor.rowcount == 1
+
 
 def extract_weather(data: dict[str, Any]) -> dict[str, Any]:
     current = data["current"]
@@ -82,14 +93,18 @@ def extract_weather(data: dict[str, Any]) -> dict[str, Any]:
     humidity = current["relative_humidity_2m"]
     recorded_at = current["time"]
 
-    if temperature is None:
-        raise ValueError("Temperature is missing")
+    # In python, booleans are a subclass of int (True = 1, False = 0)
+    if isinstance(temperature, bool) or not isinstance(temperature, (int, float)):
+        raise ValueError("Temperature must be numeric")
 
-    if humidity is None:
-        raise ValueError("Humidity is missing")
+    if isinstance(humidity, bool) or not isinstance(humidity, (int, float)):
+        raise ValueError("Humidity must be numeric")
 
-    if recorded_at is None:
-        raise ValueError("Observation timestamp is missing")
+    if not 0 <= humidity <= 100:
+        raise ValueError("Humidity must be between 0 and 100")
+
+    if not isinstance(recorded_at, str) or not recorded_at:
+        raise ValueError("Invalid observation timestamp")
 
     return {
         "temperature": temperature,
@@ -98,14 +113,45 @@ def extract_weather(data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def run_pipeline():
+    logger.info("Weather pipeline started.")
+    
+    try:
+        data = fetch_weather()
+
+        if data is not None:
+            record = extract_weather(data)
+            inserted = save_weather(record)
+
+            if inserted:
+                logger.info("New weather observation inserted.")
+            else:
+                logger.info("Observation already exists. Skipped.")
+        else:
+            logger.error("Data is invalid")
+
+    except requests.exceptions.RequestException as err:
+        logger.exception(f"API request failed: {err}")
+        raise
+
+    except (KeyError, ValueError, TypeError) as err:
+        logger.exception(f"Weather data validation failed: {err}")
+        raise
+
+    except psycopg.OperationalError as err:
+        logger.exception(f"Database connection/operation failed: {err}")
+        raise
+
+    except psycopg.DataError as err:
+        logger.exception(f"Database rejected the data: {err}")
+        raise
+
+    except psycopg.Error as err:
+        logger.exception(f"Miscellaneous database error: {err}")
+        raise
+    
+    logger.info("Weather pipeline succeeded.")
+
+
 if __name__ == "__main__":
-    data = fetch_weather()
-
-    if data is not None:
-        record = extract_weather(data)
-        save_weather(record)
-
-        print("Weather data saved!")
-
-    else:
-        print("Data is invalid")
+    run_pipeline()
