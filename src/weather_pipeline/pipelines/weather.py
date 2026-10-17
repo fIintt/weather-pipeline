@@ -1,58 +1,65 @@
 import logging
-from typing import Any
 
 import time
+from typing import Literal
 import psycopg
 import requests
 
-from weather_pipeline.ingestion.clients import fetch_weather
-from weather_pipeline.loading.database import save_weather
+from weather_pipeline.ingestion.clients import extract_weather, extract_weather_archive
+from weather_pipeline.loading.database import load_weather, load_weather_archive
 from weather_pipeline.logging_config import configure_logging
+from weather_pipeline.transform.processor import (
+    transform_weather,
+    transform_weather_archive,
+)
 
 logger = logging.getLogger(__name__)
 
 
-def extract_weather(data: dict[str, Any]) -> dict[str, Any]:
-    current = data["current"]
+def run_pipeline(
+    pipeline_type: Literal["single", "batch"],
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> None:
+    if pipeline_type not in ("single", "batch"):
+        raise ValueError(f"Unsupported pipeline type: {pipeline_type}")
 
-    temperature = current["temperature_2m"]
-    humidity = current["relative_humidity_2m"]
-    recorded_at = current["time"]
-
-    # In python, booleans are a subclass of int (True = 1, False = 0)
-    if isinstance(temperature, bool) or not isinstance(temperature, (int, float)):
-        raise ValueError("Temperature must be numeric")
-
-    if isinstance(humidity, bool) or not isinstance(humidity, (int, float)):
-        raise ValueError("Humidity must be numeric")
-
-    if not 0 <= humidity <= 100:
-        raise ValueError("Humidity must be between 0 and 100")
-
-    if not isinstance(recorded_at, str) or not recorded_at:
-        raise ValueError("Invalid observation timestamp")
-
-    return {
-        "temperature": temperature,
-        "humidity": humidity,
-        "recorded_at": recorded_at,
-    }
-
-
-def run_pipeline() -> None:
     started_at = time.perf_counter()
 
     logger.info("Weather pipeline started.")
 
     try:
-        data = fetch_weather()
-        record = extract_weather(data)
-        inserted = save_weather(record)
+        if pipeline_type == "single":
+            raw = extract_weather()
+            record = transform_weather(raw)
+            inserted = load_weather(record)
 
-        if inserted:
-            logger.info("New weather observation inserted.")
+            if inserted:
+                logger.info("New weather observation inserted.")
+            else:
+                logger.info("Observation already exists. Skipped.")
+
+        elif pipeline_type == "batch":
+            if start_date is None or end_date is None:
+                raise ValueError(
+                    "start_date and end_date are required for batch ingestion"
+                )
+
+            raw = extract_weather_archive(start_date, end_date)
+            records = transform_weather_archive(raw)
+            inserted = load_weather_archive(records)
+
+            skipped = len(records) - inserted
+
+            logger.info(
+                "Batch completed: received=%s inserted=%s skipped=%s",
+                len(records),
+                inserted,
+                skipped,
+            )
+
         else:
-            logger.info("Observation already exists. Skipped.")
+            print("Invalid pipeline type.")
 
     except requests.exceptions.RequestException:
         logger.exception("API request failed")
@@ -84,7 +91,18 @@ def run_pipeline() -> None:
 
 def main() -> None:
     configure_logging()
-    run_pipeline()
+
+    pipeline_type = str(input("Choose pipeline type [single/batch]: "))
+
+    if pipeline_type == "single":
+        run_pipeline("single")
+    elif pipeline_type == "batch":
+        start_date = str(input("Specify START DATE (YY-MM-DD): "))
+        end_date = str(input("Specify END DATE (YY-MM-DD): "))
+        
+        run_pipeline("batch", start_date, end_date)
+    else:
+        print("Invalid pipeline type.")
 
 
 if __name__ == "__main__":

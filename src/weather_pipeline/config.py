@@ -18,6 +18,8 @@ def require_env(name: str) -> str:
 # API
 API_URL = "https://api.open-meteo.com/v1/forecast"
 API_TIMEOUT = 10
+API_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
+API_ARCHIVE_TIMEOUT = 30
 
 # Database
 DB_USER = require_env("DB_USER")

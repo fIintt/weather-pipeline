@@ -4,12 +4,12 @@ from typing import Any
 
 import requests
 
-from weather_pipeline.config import API_TIMEOUT, API_URL
+from weather_pipeline.config import API_ARCHIVE_TIMEOUT, API_ARCHIVE_URL, API_TIMEOUT, API_URL
 
 logger = logging.getLogger(__name__)
 
 
-def fetch_weather() -> dict[str, Any]:
+def extract_weather() -> dict[str, Any]:
     max_attempts = 3
     retryable_status_codes = {
         408,
@@ -64,3 +64,27 @@ def fetch_weather() -> dict[str, Any]:
         time.sleep(delay)
 
     return {}
+
+def extract_weather_archive(start_date: str, end_date: str) -> dict[str, Any]:
+    if not start_date or not end_date:
+        raise ValueError("start_date and end_date are required for batch ingestion")
+    
+    params: dict[str, Any] = {
+        "latitude": 40,
+        "longitude": 66,
+        "start_date": start_date,
+        "end_date": end_date,
+        "hourly": "temperature_2m,relative_humidity_2m",
+        "timezone": "GMT",
+    }
+    
+    response = requests.get(API_ARCHIVE_URL, params=params, timeout=API_ARCHIVE_TIMEOUT)
+    response.raise_for_status()
+    
+    data: dict[str, Any] = response.json()
+    
+    # Using data["error"] causes a KeyError if "error" field is not present in the response
+    if data.get("error"):
+        raise ValueError(f"Weather API error: {data.get("reason")}")
+    
+    return data
